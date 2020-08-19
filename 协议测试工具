@@ -1,0 +1,192 @@
+举个例子，
+升级技能，服务端和客户端有个约定：升级技能的操作协议号是110101，参数是技能的itemID（int类型），玩家点击了升级A技能（itemID：10001），客户端就发送包含协议号110101，参数为10001的封包到了服务端。
+
+必要性
+举两个如果没做接口测试，有可能会出现的bug吧：
+
+·重发领奖封包，可以重复领奖。
+·背包出售道具，修改售价溢出，获取大量游戏币。
+
+游戏和APP很大的一个不同点。大部分的APP采用的通讯协议是公有协议，如HTTP。标准化的，成熟的协议，有不少测试框架和工具可以直接选择使用。
+而游戏就略尴尬了。大部分都是私有协议，Socket通讯，封包结构自定义，数据采用二进制压缩传输，如：谷歌的Protocol Buffer。在工具的选择上，就没有APP那样百花齐放了。
+有些团队会使用WPE，WPE是一个经典的网络封包编辑器，可以拦截，修改，重发Socket协议的封包，对于爱折腾的人来说，是必备工具。操作简单，入门教程上网一搜就不少。但是使用起来，也不太方便。
+对于二进制加密传输封包，WPE拦截到的封包，可读性不佳，乱码一团，修改封包的指定字段的数值也比较麻烦。
+发送封包后，没有提供返回结果的显示，操作是否生效只能在游戏内确认。
+虽然可以把发送过的封包保存起来，但是作为测试用例来统一管理是挺不方便的。
+
+
+工具需求规划如下：
+
+支持录制请求
+可以对录制的请求进行复制，修改，删除，并发
+解析请求里边的参数列表
+查看服务端的返回结果
+自动校验返回结果
+测试用例保存到本地
+
+录制的原理(点击一个技能升级的按钮的背后发生了什么？)
+1.UI接收到点击请求，调用技能模块
+2.技能模块准备好参数列表，调用Server层的Send方法，生成一个请求
+3.Server层接收后，对请求进行封装，加入校验key和请求头，压缩为PB格式，生成最终请求
+4.发送给服务端
+
+那么，要从哪里切入来录制请求呢？选择在Server层接收后，对请求进行封装前。
+主要原因是，接口测试主要关注参数的不合理修改后，服务端能否做出正确判断，可以不用关心校验Key、Token等其他信息。
+对请求进行修改后，点击发送，直接调用Send方法，底层就会完成新的请求封装和发送。比较省代码
+
+如何录制？
+前端底层提供一个onRequest的事件，在需要转存请求的时候，注册自己的事件处理函数。
+同样的，录制服务端的返回结果，也是类似的方式。
+
+参考代码：
+
+public override void StartRecord() {
+    MsgCenter.AddMsg("Start to record Request");
+    EventHelper.Ins.Get<SystemEventGroup>().onRequest.AddHandler(OnRequest);
+}
+
+void OnRequest(ServerService ss, Request req) {
+    IList<object> paramList = null;
+    if (req.ParamList.IsNotBlank()) {
+        paramList = req.ParamList;
+    }
+    this.Add(new TRequest(req.Protocol, paramList));
+}
+-----------------------------------------------------------------------------------------
+转存请求的TRequest的定义：
+
+[Serializable]
+public class TRequest : ICloneable {
+
+    public int protocol;
+    public IList<object> paramList;
+    public string des = "空描述";
+
+    public TRequest(int protocol, IList<object> paramList) {
+        this.protocol = protocol;
+        this.paramList = paramList;
+    }
+
+    public object Clone() {
+        MemoryStream stream = new MemoryStream();
+        BinaryFormatter formatter = new BinaryFormatter();
+        formatter.Serialize(stream, this);
+        stream.Position = 0;
+        return formatter.Deserialize(stream);
+    }
+}
+-----------------------------------------------------------------------------------------
+
+UI界面：
+Unity - OnGUI方法，特点：易学、够用
+代码参考：
+using UnityEngine;
+
+public class TestUI : MonoBehaviour {
+
+    private Rect windowRect = new Rect(Screen.width * 0.25f, 0, Screen.width / 2, Screen.height - 10);
+    public Vector2 scrollPosition = Vector2.zero;
+
+    void OnGUI() {
+            windowRect = GUI.Window(0, windowRect, WindowFunction, "xx协议测试工具");
+    }
+
+    void WindowFunction(int windowID) {
+
+        GUI.DragWindow(new Rect(0, 0, Screen.width/2, 30));
+        GUI.Box(new Rect(0,0,Screen.width,Screen.height),"");
+
+        GUILayout.BeginArea(new Rect(5, 20, Screen.width / 2-20, Screen.height));       
+        scrollPosition = GUILayout.BeginScrollView(scrollPosition,GUILayout.Width(Screen.width / 2 - 20),GUILayout.Height(Screen.height-60));
+
+        // 在这里请求列表解析
+        GUILayout.EndScrollView();
+        GUILayout.BeginHorizontal();
+
+        if (GUILayout.Button("统计数量")) {
+        }
+        if (GUILayout.Button("清空记录")) {
+        }
+        if (GUILayout.Button("录制")) {
+        }
+        if (GUILayout.Button("停止")) {
+        }
+
+        GUILayout.EndHorizontal();        
+        GUILayout.EndArea(); 
+    }
+}
+
+-----------------------------------------------------------------------------------------
+
+参数列表解析:
+参数列表是一个object类型的数组，所以里边可以放各种基础类型，解析的时候，需要用到反射，动态修改里边的内容，解析函数如下：
+
+public void ParseBaseType(object field, FieldInfo fieldInfo = null, object dto = null, object aList = null, int index = 0) {
+           GUILayout.BeginHorizontal();
+           Type paramType = field.GetType();
+
+           if (paramType == typeof(string)) {
+               GUILayout.Label("String", GUILayout.Width(35));
+               field = GUILayout.TextField(field.ToString());
+
+           } else if (paramType == typeof(short)) {
+               GUILayout.Label("Short", GUILayout.Width(35));
+               field = Convert.ToInt16(GUILayout.TextField(field.ToString()));
+
+           } else if (paramType == typeof(int)) {
+               GUILayout.Label("Int", GUILayout.Width(35));
+               field = Convert.ToInt32(GUILayout.TextField(field.ToString()));
+
+           } else if (paramType == typeof(long)) {
+               GUILayout.Label("Long", GUILayout.Width(35));
+               field = Convert.ToInt64(GUILayout.TextField(field.ToString()));
+
+           } else if (paramType == typeof(bool)) {
+               GUILayout.Label("Bool", GUILayout.Width(35));
+               field = Convert.ToBoolean(GUILayout.TextField(field.ToString()));
+           } else {
+               GUILayout.Label("type can not parse,type is " + paramType.Name);
+               GUILayout.EndHorizontal();
+               return;
+           }
+           if (fieldInfo != null && dto != null) {
+               fieldInfo.SetValue(dto, field);
+           }
+           if (aList != null) {          // 数组需要用反射去修改
+
+               var removeAtMethod = aList.GetType().GetMethod("RemoveAt");
+               removeAtMethod.Invoke(aList, new object[] { index });
+
+               var insertMethod = aList.GetType().GetMethod("Insert");
+               insertMethod.Invoke(aList, new object[] { index, field });
+           }
+
+           GUILayout.EndHorizontal();
+
+       }
+	   
+-----------------------------------------------------------------------------------------
+保存和读取用例文件:
+直接使用C#自带的序列号，不足之处，序列化后的文件，无法用文本编辑器直接阅读。
+
+public void SaveRequetsToFile(string fileName) {
+    Stream fStream = new FileStream(fileName, FileMode.Create, FileAccess.ReadWrite);
+    BinaryFormatter binFormat = new BinaryFormatter();//创建二进制序列化器
+    binFormat.Serialize(fStream, InterfaceService.Ins.getAll());
+    fStream.Close();
+    Debug.LogWarning("成功保存" + fileName);
+}
+
+public List<TRequest> LoadRequetsFromFile(string fileName) {
+    //string fileName = @"C:\VSTest\InterfaceTest.dat";//文件名称与路径
+    Stream fStream = new FileStream(fileName, FileMode.Open, FileAccess.ReadWrite);
+    BinaryFormatter binFormat = new BinaryFormatter();//创建二进制序列化器                     
+    var result = (List<TRequest>) binFormat.Deserialize(fStream);
+    fStream.Close();
+    Debug.LogWarning("成功读取" + fileName);
+    return result;
+
+}
+
+
