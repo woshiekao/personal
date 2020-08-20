@@ -181,14 +181,13 @@ public void SaveRequetsToFile(string fileName) {
 
 public List<TRequest> LoadRequetsFromFile(string fileName) {
     //string fileName = @"C:\VSTest\InterfaceTest.dat";//文件名称与路径
-    
-    
------------------------------------------------------------------------------------------
     Stream fStream = new FileStream(fileName, FileMode.Open, FileAccess.ReadWrite);
     BinaryFormatter binFormat = new BinaryFormatter();//创建二进制序列化器                     
     var result = (List<TRequest>) binFormat.Deserialize(fStream);
     fStream.Close();
     Debug.LogWarning("成功读取" + fileName);
     return result;
-
+    
+    
+-----------------------------------------------------------------------------------------
 }
