@@ -187,7 +187,4 @@ public List<TRequest> LoadRequetsFromFile(string fileName) {
     fStream.Close();
     Debug.LogWarning("成功读取" + fileName);
     return result;
-    
-    
------------------------------------------------------------------------------------------
 }
